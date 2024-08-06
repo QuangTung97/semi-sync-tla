@@ -294,12 +294,16 @@ RecoverOldLeader(r) ==
     /\ UNCHANGED healer_vars
 
 
-Terminated ==
+
+TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
+
+Terminated ==
+    /\ TerminateCond
     /\ UNCHANGED vars
 
 
@@ -322,6 +326,11 @@ Next ==
     \/ Terminated
 
 
+Spec == Init /\ [][Next]_vars
+
+FairSpec == Spec /\ WF_vars(Next)
+
+
 Consistent ==
     /\ \A c \in Client:
         /\ Len(client_success[c]) <= Len(db[zk_leader])
@@ -336,5 +345,6 @@ Inv ==
     /\ zk_leader_epoch <= max_change_leader
     \* /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
 
+Finish == <> TerminateCond
 
 ====
