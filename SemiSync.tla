@@ -298,6 +298,8 @@ Terminated ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
+    /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
+    /\ \A r \in Replica: db_epoch[r] = zk_epoch
     /\ UNCHANGED vars
 
 
@@ -331,7 +333,7 @@ Perms == Permutations(Replica)
 
 Inv ==
     /\ zk_epoch < 8
-    \* /\ (\A r \in Replica: doRecoverCond(r)) => zk_status = "Normal"
+    /\ zk_leader_epoch <= max_change_leader
     \* /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
 
 
