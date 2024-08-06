@@ -28,9 +28,9 @@ client_vars == <<
     pending, pending_db, client_leader_epoch>>
 healer_vars == <<healer_status, healer_epoch, healer_replicas>>
 
-max_next_req == 4
+max_next_req == 3
 
-max_change_leader == 4
+max_change_leader == 3
 
 ReqSet == 60..(60 + max_next_req)
 
@@ -41,6 +41,8 @@ NullReqSet == ReqSet \union {nil}
 NullReplica == Replica \union {nil}
 
 LogOffset == 0..20
+
+NullLogOffset == LogOffset \union {nil}
 
 Range(f) == {f[x]: x \in DOMAIN f}
 
@@ -55,7 +57,7 @@ TypeOK ==
     /\ zk_leader_epoch \in 1..max_change_leader
     /\ zk_status \in {"Normal", "ChangingLeader", "WaitReplicaLog"}
     /\ old_leaders \subseteq Replica
-    /\ zk_catchup_index \in (LogOffset \union {nil})
+    /\ zk_catchup_index \in NullLogOffset
 
     /\ db \in [Replica -> Seq(ReqSet)]
     /\ db_leader \in [Replica -> Replica]
@@ -294,12 +296,28 @@ RecoverOldLeader(r) ==
     /\ UNCHANGED healer_vars
 
 
+JoinOldOlder(r) ==
+    /\ r \in old_leaders
+    /\ zk_status = "Normal"
+    /\ Len(db[r]) <= zk_catchup_index
+    /\ db_status' = [db_status EXCEPT ![r] = "Replica"]
+    /\ db_epoch' = [db_epoch EXCEPT ![r] = zk_epoch]
+    /\ db_leader' = [db_leader EXCEPT ![r] = zk_leader]
+    /\ db_replicated' = [db_replicated EXCEPT ![r] = new_repl]
+    /\ old_leaders' = old_leaders \ {r}
+    /\ UNCHANGED db
+    /\ UNCHANGED <<zk_leader_epoch, zk_epoch, zk_leader, zk_status, zk_catchup_index>>
+    /\ UNCHANGED client_vars
+    /\ UNCHANGED healer_vars
+
+
+checked_max_epoch == 8
 
 TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
-    /\ zk_epoch >= 10
+    /\ zk_epoch >= checked_max_epoch - 1
     /\ \A c \in Client: pending[c] = nil /\ pending_db[c] = nil
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
@@ -318,6 +336,7 @@ Next ==
         \/ Replicate(r)
         \/ DBUpdateLeader(r)
         \/ RecoverOldLeader(r)
+        \/ JoinOldOlder(r)
     
     \/ ReadyToChangeZKLeader
     \/ HealerUpdateState
@@ -343,10 +362,26 @@ Perms == Permutations(Replica)
 
 
 Inv ==
-    /\ zk_epoch < 11
+    /\ zk_epoch < checked_max_epoch
     /\ zk_leader_epoch <= max_change_leader
     \* /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
 
 Finish == <> TerminateCond
+
+
+CanRequestCond ==
+    /\ zk_leader_epoch >= max_change_leader
+    /\ next_req < 60 + max_next_req
+
+CanStartReq(c) ==
+    /\ pending[c] = nil
+    /\ db_status[client_leader[c]] = "Writable"
+
+CanRequest ==
+    CanRequestCond => \E c \in Client: CanStartReq(c)
+
+StillCanRequest == []<> CanRequest
+
+WeakFairnessOfStartReq == WF_vars(StartRequest)
 
 ====
