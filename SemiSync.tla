@@ -30,7 +30,7 @@ healer_vars == <<healer_status, healer_epoch, healer_replicas>>
 
 max_next_req == 4
 
-max_change_leader == 3
+max_change_leader == 4
 
 ReqSet == 60..(60 + max_next_req)
 
@@ -299,6 +299,8 @@ TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
+    /\ zk_epoch >= 10
+    /\ \A c \in Client: pending[c] = nil /\ pending_db[c] = nil
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
 
@@ -341,7 +343,7 @@ Perms == Permutations(Replica)
 
 
 Inv ==
-    /\ zk_epoch < 8
+    /\ zk_epoch < 11
     /\ zk_leader_epoch <= max_change_leader
     \* /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
 
