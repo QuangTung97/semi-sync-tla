@@ -4,26 +4,29 @@ EXTENDS TLC, Naturals, Sequences, FiniteSets
 CONSTANT Client, Replica, nil
 
 VARIABLE
-    zk_leader, zk_epoch, zk_leader_epoch, zk_status, old_leaders,
-    db, db_leader, db_replicated, db_epoch, db_status, catchup_index,
+    zk_leader, zk_epoch, zk_leader_epoch, zk_status,
+    old_leaders, zk_catchup_index,
+    db, db_leader, db_replicated, db_epoch, db_status,
     next_req, client_leader, client_success,
     pending, pending_db, client_leader_epoch,
-    healer_run, healer_epoch, healer_replicas
+    healer_status, healer_epoch, healer_replicas
 
 vars == <<
-    zk_leader, zk_epoch, zk_leader_epoch, zk_status, old_leaders,
-    db, db_leader, db_replicated, db_epoch, db_status, catchup_index,
+    zk_leader, zk_epoch, zk_leader_epoch, zk_status,
+    old_leaders, zk_catchup_index,
+    db, db_leader, db_replicated, db_epoch, db_status,
     next_req, client_leader, client_success,
     pending, pending_db, client_leader_epoch,
-    healer_run, healer_epoch, healer_replicas
+    healer_status, healer_epoch, healer_replicas
 >>
 
-zk_vars == <<zk_leader, zk_epoch, zk_leader_epoch, zk_status, old_leaders>>
-db_vars == <<db, db_leader, db_replicated, db_epoch, db_status, catchup_index>>
+zk_vars == <<zk_leader, zk_epoch, zk_leader_epoch, zk_status,
+    old_leaders, zk_catchup_index>>
+db_vars == <<db, db_leader, db_replicated, db_epoch, db_status>>
 client_vars == <<
     next_req, client_leader, client_success,
     pending, pending_db, client_leader_epoch>>
-healer_vars == <<healer_run, healer_epoch, healer_replicas>>
+healer_vars == <<healer_status, healer_epoch, healer_replicas>>
 
 max_next_req == 4
 
@@ -50,15 +53,15 @@ TypeOK ==
     /\ zk_leader \in Replica
     /\ zk_epoch \in 1..30
     /\ zk_leader_epoch \in 1..max_change_leader
-    /\ zk_status \in {"Normal", "ChangingLeader"}
+    /\ zk_status \in {"Normal", "ChangingLeader", "WaitReplicaLog"}
     /\ old_leaders \subseteq Replica
+    /\ zk_catchup_index \in (LogOffset \union {nil})
 
     /\ db \in [Replica -> Seq(ReqSet)]
     /\ db_leader \in [Replica -> Replica]
     /\ db_replicated \in [Replica -> [Replica -> LogOffset]]
     /\ db_epoch \in [Replica -> Epoch]
     /\ db_status \in [Replica -> {"Writable", "Replica", "Frozen"}]
-    /\ catchup_index \in [Replica -> (LogOffset \union {nil})]
 
     /\ next_req \in ReqSet
     /\ client_leader \in [Client -> Replica]
@@ -67,7 +70,7 @@ TypeOK ==
     /\ pending_db \in [Client -> NullReplica]
     /\ client_leader_epoch \in [Client -> Epoch]
 
-    /\ healer_run \in BOOLEAN 
+    /\ healer_status \in {"Init", "UpdatingLeader", "WaitReplica"}
     /\ healer_epoch \in Epoch
     /\ healer_replicas \in [Replica -> LogOffset \union {nil}]
 
@@ -78,13 +81,13 @@ Init ==
     /\ zk_leader_epoch = 1
     /\ zk_status = "Normal"
     /\ old_leaders = {}
+    /\ zk_catchup_index = nil
 
     /\ db = [r \in Replica |-> <<>>]
     /\ db_leader = [r \in Replica |-> zk_leader]
     /\ db_replicated = [r \in Replica |-> [r1 \in Replica |-> 0]]
     /\ db_epoch = [r \in Replica |-> zk_epoch]
     /\ db_status = [r \in Replica |-> IF zk_leader = r THEN "Writable" ELSE "Replica"]
-    /\ catchup_index = [r \in Replica |-> nil]
 
     /\ next_req = 60
     /\ client_leader = [c \in Client |-> zk_leader]
@@ -93,7 +96,7 @@ Init ==
     /\ pending_db = [c \in Client |-> nil]
     /\ client_leader_epoch = [c \in Client |-> zk_leader_epoch]
 
-    /\ healer_run = FALSE
+    /\ healer_status = "Init"
     /\ healer_epoch = 1
     /\ healer_replicas = [r \in Replica |-> nil]
 
@@ -110,7 +113,7 @@ StartRequest(c) ==
         /\ db_replicated' = [
             db_replicated EXCEPT ![leader][leader] = Len(db'[leader])]
     /\ UNCHANGED <<client_leader, client_success, client_leader_epoch>>
-    /\ UNCHANGED <<db_leader, db_epoch, db_status, catchup_index>>
+    /\ UNCHANGED <<db_leader, db_epoch, db_status>>
     /\ UNCHANGED zk_vars
     /\ UNCHANGED healer_vars
 
@@ -125,7 +128,7 @@ Replicate(r) ==
             /\ Len(db[r]) < Len(leader_data)
             /\ db' = [db EXCEPT ![r] = Append(@, leader_data[new_len])]
             /\ db_replicated' = [db_replicated EXCEPT ![leader][r] = new_len]
-    /\ UNCHANGED <<db_leader, db_epoch, db_status, catchup_index>>
+    /\ UNCHANGED <<db_leader, db_epoch, db_status>>
     /\ UNCHANGED client_vars
     /\ UNCHANGED zk_vars
     /\ UNCHANGED healer_vars
@@ -141,7 +144,7 @@ initReplicated(r) ==
 
 
 dbStatusFromZK(r) ==
-    IF zk_status = "Normal"
+    IF zk_status \in {"Normal", "WaitReplicaLog"} /\ ~(r \in old_leaders)
         THEN IF zk_leader = r
             THEN "Writable"
             ELSE "Replica"
@@ -156,7 +159,7 @@ DBUpdateLeader(r) ==
     /\ IF db_leader[r] /= zk_leader
         THEN initReplicated(r)
         ELSE UNCHANGED db_replicated
-    /\ UNCHANGED <<db, catchup_index>>
+    /\ UNCHANGED <<db>>
     /\ UNCHANGED zk_vars
     /\ UNCHANGED client_vars
     /\ UNCHANGED healer_vars
@@ -207,29 +210,38 @@ ReadyToChangeZKLeader ==
     /\ zk_epoch' = zk_epoch + 1
     /\ old_leaders' = old_leaders \union {zk_leader}
 
-    /\ UNCHANGED <<zk_leader, zk_leader_epoch>>
+    /\ UNCHANGED <<zk_leader, zk_leader_epoch, zk_catchup_index>>
     /\ UNCHANGED client_vars
     /\ UNCHANGED db_vars
     /\ UNCHANGED healer_vars
+
+
+
+zkStatusToHealerStatus ==
+    IF zk_status = "ChangingLeader"
+        THEN "UpdatingLeader"
+        ELSE IF zk_status = "WaitReplicaLog"
+            THEN "WaitReplica"
+            ELSE "Init"
 
 
 HealerUpdateState ==
     /\ healer_epoch < zk_epoch
     /\ healer_epoch' = zk_epoch
     /\ healer_replicas' = [r \in Replica |-> nil]
-    /\ healer_run' = (zk_status = "ChangingLeader")
+    /\ healer_status' = zkStatusToHealerStatus
     /\ UNCHANGED zk_vars
     /\ UNCHANGED client_vars
     /\ UNCHANGED db_vars
 
 
 HealerGetDBLog(r) ==
-    /\ healer_run
+    /\ healer_status = "UpdatingLeader"
     /\ healer_replicas[r] = nil
     /\ ~(r \in old_leaders)
     /\ db_epoch[r] = healer_epoch
     /\ healer_replicas' = [healer_replicas EXCEPT ![r] = Len(db[r])]
-    /\ UNCHANGED <<healer_run, healer_epoch>>
+    /\ UNCHANGED <<healer_status, healer_epoch>>
     /\ UNCHANGED db_vars
     /\ UNCHANGED client_vars
     /\ UNCHANGED zk_vars
@@ -238,13 +250,14 @@ HealerGetDBLog(r) ==
 collectedDB == {r \in Replica: healer_replicas[r] /= nil}
 
 HealerUpdateLeader ==
-    /\ healer_run
+    /\ healer_status = "UpdatingLeader"
     /\ healer_epoch = zk_epoch
     /\ Cardinality(collectedDB) >= replication_factor
     /\ \E r \in collectedDB:
         /\ \A r1 \in collectedDB: healer_replicas[r] >= healer_replicas[r1]
         /\ zk_leader' = r
-    /\ zk_status' = "Normal"
+        /\ zk_catchup_index' = healer_replicas[r]
+    /\ zk_status' = "WaitReplicaLog"
     /\ zk_epoch' = zk_epoch + 1
     /\ zk_leader_epoch' = zk_leader_epoch + 1
     /\ UNCHANGED old_leaders
@@ -253,43 +266,38 @@ HealerUpdateLeader ==
     /\ UNCHANGED client_vars
 
 
-PrepareRecoverOldLeader(r) ==
+HealerUpdateToNormal ==
+    /\ healer_status = "WaitReplica"
+    /\ zk_status = "WaitReplicaLog"
+    /\ \E Q \in Quorum:
+        /\ ~(old_leaders \subseteq Q)
+        /\ \A r \in Q: Len(db[r]) >= zk_catchup_index
+    /\ zk_status' = "Normal"
+    /\ zk_epoch' = zk_epoch + 1
+    /\ UNCHANGED <<old_leaders, zk_leader_epoch, zk_leader, zk_catchup_index>>
+    /\ UNCHANGED healer_vars
+    /\ UNCHANGED db_vars
+    /\ UNCHANGED client_vars
+
+
+RecoverOldLeader(r) ==
     /\ r \in old_leaders
     /\ zk_status = "Normal"
-    /\ catchup_index' = [catchup_index EXCEPT ![r] = Len(db[zk_leader])]
     /\ db' = [db EXCEPT ![r] = <<>>]
     /\ db_status' = [db_status EXCEPT ![r] = "Replica"]
     /\ db_epoch' = [db_epoch EXCEPT ![r] = zk_epoch]
     /\ db_leader' = [db_leader EXCEPT ![r] = zk_leader]
     /\ db_replicated' = [db_replicated EXCEPT ![r] = new_repl]
-    /\ UNCHANGED <<zk_epoch, zk_leader, zk_leader_epoch, zk_status>>
-    /\ UNCHANGED client_vars
-    /\ UNCHANGED healer_vars
-    /\ UNCHANGED old_leaders
-
-
-
-doRecoverCond(r) ==
-    /\ r \in old_leaders
-    /\ catchup_index[r] /= nil
-    /\ Len(db[r]) >= catchup_index[r]
-
-DoRecoverOldLeader(r) ==
-    /\ r \in old_leaders
-    /\ catchup_index[r] /= nil
-    /\ Len(db[r]) >= catchup_index[r]
     /\ old_leaders' = old_leaders \ {r}
-    /\ db_status' = [db_status EXCEPT ![r] = "Replica"]
-    /\ zk_epoch' = zk_epoch + 1
-    /\ UNCHANGED <<zk_leader, zk_leader_epoch, zk_status>>
+    /\ UNCHANGED <<zk_epoch, zk_leader, zk_leader_epoch, zk_status, zk_catchup_index>>
     /\ UNCHANGED client_vars
-    /\ UNCHANGED <<db, db_leader, db_replicated, db_epoch, catchup_index>>
     /\ UNCHANGED healer_vars
 
 
 Terminated ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
+    /\ zk_leader_epoch = max_change_leader
     /\ UNCHANGED vars
 
 
@@ -301,13 +309,13 @@ Next ==
     \/ \E r \in Replica:
         \/ Replicate(r)
         \/ DBUpdateLeader(r)
-        \/ PrepareRecoverOldLeader(r)
-        \/ DoRecoverOldLeader(r)
+        \/ RecoverOldLeader(r)
     
     \/ ReadyToChangeZKLeader
     \/ HealerUpdateState
     \/ \E r \in Replica: HealerGetDBLog(r)
     \/ HealerUpdateLeader
+    \/ HealerUpdateToNormal
 
     \/ Terminated
 
@@ -323,8 +331,8 @@ Perms == Permutations(Replica)
 
 Inv ==
     /\ zk_epoch < 8
-    /\ (\A r \in Replica: doRecoverCond(r)) => zk_status = "Normal"
-    /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
+    \* /\ (\A r \in Replica: doRecoverCond(r)) => zk_status = "Normal"
+    \* /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
 
 
 ====
