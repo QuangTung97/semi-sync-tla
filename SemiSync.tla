@@ -27,7 +27,7 @@ healer_vars == <<healer_run, healer_epoch, healer_replicas>>
 
 max_next_req == 4
 
-max_change_leader == 5
+max_change_leader == 3
 
 ReqSet == 60..(60 + max_next_req)
 
@@ -153,7 +153,9 @@ DBUpdateLeader(r) ==
     /\ db_epoch' = [db_epoch EXCEPT ![r] = zk_epoch]
     /\ db_leader' = [db_leader EXCEPT ![r] = zk_leader]
     /\ db_status' = [db_status EXCEPT ![r] = dbStatusFromZK(r)]
-    /\ initReplicated(r)
+    /\ IF db_leader[r] /= zk_leader
+        THEN initReplicated(r)
+        ELSE UNCHANGED db_replicated
     /\ UNCHANGED <<db, catchup_index>>
     /\ UNCHANGED zk_vars
     /\ UNCHANGED client_vars
@@ -197,12 +199,14 @@ ClientUpdateLeader(c) ==
 
 
 ReadyToChangeZKLeader ==
-    /\ zk_epoch < max_change_leader - 1
+    /\ zk_leader_epoch < max_change_leader
     /\ Cardinality(Replica \ old_leaders) > replication_factor
     /\ zk_status = "Normal"
+
     /\ zk_status' = "ChangingLeader"
     /\ zk_epoch' = zk_epoch + 1
     /\ old_leaders' = old_leaders \union {zk_leader}
+
     /\ UNCHANGED <<zk_leader, zk_leader_epoch>>
     /\ UNCHANGED client_vars
     /\ UNCHANGED db_vars
@@ -232,7 +236,6 @@ HealerGetDBLog(r) ==
 
 
 collectedDB == {r \in Replica: healer_replicas[r] /= nil}
-
 
 HealerUpdateLeader ==
     /\ healer_run
@@ -265,13 +268,20 @@ PrepareRecoverOldLeader(r) ==
     /\ UNCHANGED old_leaders
 
 
+
+doRecoverCond(r) ==
+    /\ r \in old_leaders
+    /\ catchup_index[r] /= nil
+    /\ Len(db[r]) >= catchup_index[r]
+
 DoRecoverOldLeader(r) ==
     /\ r \in old_leaders
     /\ catchup_index[r] /= nil
     /\ Len(db[r]) >= catchup_index[r]
     /\ old_leaders' = old_leaders \ {r}
     /\ db_status' = [db_status EXCEPT ![r] = "Replica"]
-    /\ UNCHANGED <<zk_epoch, zk_leader, zk_leader_epoch, zk_status>>
+    /\ zk_epoch' = zk_epoch + 1
+    /\ UNCHANGED <<zk_leader, zk_leader_epoch, zk_status>>
     /\ UNCHANGED client_vars
     /\ UNCHANGED <<db, db_leader, db_replicated, db_epoch, catchup_index>>
     /\ UNCHANGED healer_vars
@@ -279,6 +289,7 @@ DoRecoverOldLeader(r) ==
 
 Terminated ==
     /\ next_req = 60 + max_next_req
+    /\ zk_status = "Normal"
     /\ UNCHANGED vars
 
 
@@ -308,5 +319,12 @@ Consistent ==
 
 
 Perms == Permutations(Replica)
+
+
+Inv ==
+    /\ zk_epoch < 8
+    /\ (\A r \in Replica: doRecoverCond(r)) => zk_status = "Normal"
+    /\ (zk_leader_epoch >= 2) => (\A c \in Client: Len(client_success[c]) < 4)
+
 
 ====
