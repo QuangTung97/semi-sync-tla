@@ -32,6 +32,10 @@ max_next_req == 2
 
 max_change_leader == 3
 
+checked_max_epoch == 10
+
+replication_factor == 3
+
 ReqSet == 60..(60 + max_next_req)
 
 Epoch == 0..20
@@ -45,8 +49,6 @@ LogOffset == 0..20
 NullLogOffset == LogOffset \union {nil}
 
 Range(f) == {f[x]: x \in DOMAIN f}
-
-replication_factor == 3
 
 Quorum == {x \in SUBSET Replica: Cardinality(x) = replication_factor}
 
@@ -307,7 +309,6 @@ TruncateOldLeader(r) ==
     /\ UNCHANGED healer_vars
 
 
-checked_max_epoch == 14
 
 TerminateCond ==
     /\ next_req = 60 + max_next_req
