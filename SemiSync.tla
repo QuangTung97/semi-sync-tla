@@ -32,7 +32,7 @@ max_next_req == 2
 
 max_change_leader == 3
 
-checked_max_epoch == 15
+checked_max_epoch == 15 \* TODO
 
 replication_factor == 3
 
@@ -315,7 +315,7 @@ TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
-    \* /\ zk_epoch >= checked_max_epoch - 1
+    \* /\ zk_epoch >= checked_max_epoch - 1 TODO
     /\ \A c \in Client: pending[c] = nil /\ pending_db[c] = nil
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
