@@ -28,9 +28,9 @@ client_vars == <<
     pending, pending_db, client_leader_epoch>>
 healer_vars == <<healer_status, healer_epoch, healer_replicas>>
 
-max_next_req == 4
+max_next_req == 2
 
-max_change_leader == 4
+max_change_leader == 3
 
 ReqSet == 60..(60 + max_next_req)
 
@@ -46,7 +46,7 @@ NullLogOffset == LogOffset \union {nil}
 
 Range(f) == {f[x]: x \in DOMAIN f}
 
-replication_factor == 2
+replication_factor == 3
 
 Quorum == {x \in SUBSET Replica: Cardinality(x) = replication_factor}
 
@@ -258,10 +258,10 @@ HealerUpdateLeader ==
         /\ \A r1 \in collectedDB: healer_replicas[r] >= healer_replicas[r1]
         /\ zk_leader' = r
         /\ zk_catchup_index' = healer_replicas[r]
+        /\ old_leaders' = old_leaders \union (Replica \ collectedDB)
     /\ zk_status' = "WaitReplicaLog"
     /\ zk_epoch' = zk_epoch + 1
     /\ zk_leader_epoch' = zk_leader_epoch + 1
-    /\ UNCHANGED old_leaders
     /\ UNCHANGED healer_vars
     /\ UNCHANGED db_vars
     /\ UNCHANGED client_vars
