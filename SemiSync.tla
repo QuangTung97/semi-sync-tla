@@ -32,7 +32,7 @@ max_next_req == 2
 
 max_change_leader == 3
 
-checked_max_epoch == 10
+checked_max_epoch == 15
 
 replication_factor == 3
 
@@ -261,6 +261,7 @@ HealerUpdateLeader ==
         /\ zk_leader' = r
         /\ zk_catchup_index' = healer_replicas[r]
         /\ old_leaders' = old_leaders \union (Replica \ collectedDB)
+        \* /\ UNCHANGED old_leaders
     /\ zk_status' = "WaitReplicaLog"
     /\ zk_epoch' = zk_epoch + 1
     /\ zk_leader_epoch' = zk_leader_epoch + 1
@@ -274,7 +275,7 @@ HealerUpdateToNormal ==
     /\ zk_status = "WaitReplicaLog"
     /\ healer_epoch = zk_epoch
     /\ \E Q \in Quorum:
-        /\ ~(old_leaders \subseteq Q)
+        /\ (Q \intersect old_leaders) = {}
         /\ \A r \in Q: Len(db[r]) >= zk_catchup_index
     /\ zk_status' = "Normal"
     /\ zk_epoch' = zk_epoch + 1
@@ -314,7 +315,7 @@ TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
-    /\ zk_epoch >= checked_max_epoch - 1
+    \* /\ zk_epoch >= checked_max_epoch - 1
     /\ \A c \in Client: pending[c] = nil /\ pending_db[c] = nil
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
