@@ -28,13 +28,13 @@ client_vars == <<
     pending, pending_db, client_leader_epoch>>
 healer_vars == <<healer_status, healer_epoch, healer_replicas>>
 
-max_next_req == 2
+max_next_req == 3
 
-max_change_leader == 3
+max_change_leader == 4
 
-checked_max_epoch == 15 \* TODO
+checked_max_epoch == 14
 
-replication_factor == 3
+replication_factor == 2
 
 ReqSet == 60..(60 + max_next_req)
 
@@ -51,6 +51,8 @@ NullLogOffset == LogOffset \union {nil}
 Range(f) == {f[x]: x \in DOMAIN f}
 
 Quorum == {x \in SUBSET Replica: Cardinality(x) = replication_factor}
+
+ASSUME \A Q1 \in Quorum, Q2 \in Quorum: Q1 \intersect Q2 /= {}
 
 
 TypeOK ==
@@ -315,7 +317,7 @@ TerminateCond ==
     /\ next_req = 60 + max_next_req
     /\ zk_status = "Normal"
     /\ zk_leader_epoch = max_change_leader
-    \* /\ zk_epoch >= checked_max_epoch - 1 TODO
+    /\ zk_epoch >= checked_max_epoch - 1
     /\ \A c \in Client: pending[c] = nil /\ pending_db[c] = nil
     /\ \A c \in Client: client_leader_epoch[c] = zk_leader_epoch
     /\ \A r \in Replica: db_epoch[r] = zk_epoch
